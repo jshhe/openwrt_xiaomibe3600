@@ -1,0 +1,231 @@
+name: RD16 build
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "preflight = vendor_feed + config; prepare = validate qca-wpa-cli patches; build = full firmware"
+        type: choice
+        options: ["preflight", "prepare", "build"]
+        default: "preflight"
+      source_branch:
+        description: "Source branch"
+        required: true
+        default: "openwrt-24-be3600"
+      profile:
+        description: "Device profile"
+        type: choice
+        options: ["xiaomi-rd16-qsdk", "xiaomi-rd16-qsdk-singbox"]
+        default: "xiaomi-rd16-qsdk"
+      stock_fw_url:
+        description: "Stock RD16 firmware used as vendor_feed source"
+        required: true
+        default: "https://cdn.cnbj1.fds.api.mi-img.com/xiaoqiang/rom/rd16/miwifi_rd16_firmware_87da2_1.0.31.bin"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rd16-${{ github.ref }}-${{ inputs.profile }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android \
+            /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_branch }}
+          fetch-depth: 1
+
+      - name: Restore download cache
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-v1
+          restore-keys: |
+            dl-
+
+      - name: Restore toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            staging_dir/host
+            staging_dir/toolchain-*
+            build_dir/toolchain-*
+          key: tc-${{ hashFiles('toolchain/**', 'vendor_toolchain/**', 'include/**') }}
+          restore-keys: |
+            tc-
+
+      - name: Select working apt mirror
+        run: |
+          USE=""
+          for m in http://archive.ubuntu.com/ubuntu \
+                   http://azure.archive.ubuntu.com/ubuntu \
+                   http://mirrors.edge.kernel.org/ubuntu \
+                   http://ftp.ubuntu.com/ubuntu; do
+            if curl -fsSI --max-time 10 "$m/dists/jammy/Release" >/dev/null 2>&1; then
+              USE="$m"
+              break
+            fi
+            echo "mirror unreachable: $m"
+          done
+          if [ -z "$USE" ]; then
+            echo "no reachable Ubuntu mirror"
+            exit 1
+          fi
+          echo "using mirror: $USE"
+          echo "$USE/" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
+            [ -f "$f" ] || continue
+            sudo sed -i -E "s|mirror\+file:/etc/apt/apt-mirrors.txt|$USE|g; s|https?://[a-z0-9.-]*archive\.ubuntu\.com/ubuntu|$USE|g" "$f"
+          done
+          grep -rhE '^(deb|URIs)' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | head -5
+
+      - name: Install dependencies
+        timeout-minutes: 25
+        run: |
+          APT_OPTS="-o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::ForceIPv4=true"
+
+          ok=""
+          for i in 1 2 3 4 5; do
+            echo "::group::apt-get update (attempt $i)"
+            if sudo apt-get $APT_OPTS update; then ok=yes; fi
+            echo "::endgroup::"
+            if [ -n "$ok" ]; then break; fi
+            echo "update failed, retrying in 20s"
+            sleep 20
+          done
+
+          installed=""
+          for i in 1 2 3 4 5; do
+            echo "::group::apt-get install (attempt $i)"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_OPTS install -y --no-install-recommends \
+              build-essential clang flex bison g++ gawk \
+              gettext git libncurses-dev libssl-dev python3-distutils python3-setuptools \
+              python3-pip rsync unzip zlib1g-dev file wget bc cpio libelf-dev \
+              device-tree-compiler squashfs-tools liblzma-dev patch subversion time && installed=yes
+            echo "::endgroup::"
+            if [ -n "$installed" ]; then break; fi
+            echo "install failed, retrying in 20s"
+            sudo apt-get $APT_OPTS update || true
+            sleep 20
+          done
+
+          if [ -z "$installed" ]; then
+            echo "apt-get install failed after 5 attempts"
+            exit 1
+          fi
+
+          for i in 1 2 3 4 5; do
+            python3 -m pip install --user --retries 5 --timeout 30 --upgrade pip setuptools wheel && break
+            sleep 15
+          done
+          for i in 1 2 3 4 5; do
+            python3 -m pip install --user --retries 5 --timeout 30 ubi_reader pyelftools && break
+            sleep 15
+          done
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ~/.local/bin/ubireader_extract_images --help >/dev/null && echo "ubi_reader OK"
+
+      - name: Download stock RD16 firmware
+        run: |
+          curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o miwifi_rd16_firmware_stock.bin "${{ inputs.stock_fw_url }}"
+          ls -l miwifi_rd16_firmware_stock.bin
+          sha256sum miwifi_rd16_firmware_stock.bin
+
+      - name: Generate vendor_feed from stock firmware
+        run: ./vendor_scripts/prepare_feed.sh rd16 miwifi_rd16_firmware_stock.bin
+
+      - name: Update and patch feeds
+        run: |
+          for i in 1 2 3; do
+            ./scripts/feeds update -a && break
+            echo "feeds update failed, retrying"; sleep 20
+          done
+          python3 ./vendor_scripts/patch_feeds.py
+          ./scripts/feeds install -a
+
+      - name: Configure
+        run: |
+          ./vendor_scripts/prepare_config.sh rd16
+          OTHER=xiaomi-rd16-qsdk-singbox
+          if [ "${{ inputs.profile }}" = "xiaomi-rd16-qsdk-singbox" ]; then OTHER=xiaomi-rd16-qsdk; fi
+          sed -i "s|^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_${OTHER}=y|# &|" .config
+          echo "CONFIG_CCACHE=y" >> .config
+          make defconfig
+          echo "--- enabled devices ---"
+          grep -E "^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_.*=y" .config
+          echo "--- mwan3 packages ---"
+          grep -E "^CONFIG_PACKAGE_(mwan3|luci-app-mwan3|ipset|iptables)=" .config || true
+
+      - name: Preflight summary
+        if: inputs.stage == 'preflight'
+        run: |
+          {
+            echo "### Preflight OK"
+            echo ""
+            echo "#### vendor_feed packages"
+            echo '```'
+            ls -1 vendor_feed | head -80
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate qca-wpa-cli patches
+        if: inputs.stage == 'prepare'
+        run: |
+          set -o pipefail
+          make package/network/utils/qca-wpa-cli/prepare V=s 2>&1 | tee prepare.log
+          echo "--- patched _make_dirs recipe ---"
+          grep -n -A3 '_make_dirs:' build_dir/target-*/hostapd-wpa-cli-*/src/build.rules
+
+      - name: Build kernel toolchain (GCC 7.5.0)
+        if: inputs.stage == 'build'
+        run: ./vendor_scripts/build_kmod_toolchain.sh
+
+      - name: Build firmware
+        if: inputs.stage == 'build'
+        run: |
+          set -o pipefail
+          make -j"$(nproc)" V=s 2>&1 | tee build.log
+
+      - name: Collect images
+        if: inputs.stage == 'build'
+        run: |
+          OUT=bin/targets/ipq53xx/ipq53xx_32
+          ls -l "$OUT" || true
+          sha256sum "$OUT"/*.ubi "$OUT"/*.bin 2>/dev/null | tee sha256sums.txt || true
+
+      - name: Upload firmware and packages
+        if: inputs.stage == 'build' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rd16-${{ inputs.profile }}-${{ github.run_number }}
+          path: |
+            bin/targets/ipq53xx/ipq53xx_32/*.ubi
+            bin/targets/ipq53xx/ipq53xx_32/*.bin
+            bin/targets/ipq53xx/ipq53xx_32/packages/*.ipk
+            bin/targets/ipq53xx/ipq53xx_32/packages/*.apk
+            sha256sums.txt
+          if-no-files-found: error
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: |
+            build.log
+            prepare.log
+          if-no-files-found: ignore
