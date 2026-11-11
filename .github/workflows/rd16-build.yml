@@ -49,10 +49,40 @@ jobs:
           ref: ${{ inputs.source_branch }}
           fetch-depth: 1
 
+      - name: Select working apt mirror
+        run: |
+          # Azure-hosted runners resolve apt through /etc/apt/apt-mirrors.txt,
+          # which points at azure.archive.ubuntu.com. When that hostname fails
+          # to resolve, apt retries every package for tens of minutes and the
+          # job dies. Probe a few mirrors and repoint the sources at the first
+          # one that actually answers.
+          USE=""
+          for m in http://archive.ubuntu.com/ubuntu \
+                   http://azure.archive.ubuntu.com/ubuntu \
+                   http://mirrors.edge.kernel.org/ubuntu \
+                   http://ftp.ubuntu.com/ubuntu; do
+            if curl -fsSI --max-time 10 "$m/dists/jammy/Release" >/dev/null 2>&1; then
+              USE="$m"
+              break
+            fi
+            echo "mirror unreachable: $m"
+          done
+          if [ -z "$USE" ]; then
+            echo "no reachable Ubuntu mirror"
+            exit 1
+          fi
+          echo "using mirror: $USE"
+          echo "$USE/" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
+            [ -f "$f" ] || continue
+            sudo sed -i -E "s|mirror\+file:/etc/apt/apt-mirrors.txt|$USE|g; s|https?://[a-z0-9.-]*archive\.ubuntu\.com/ubuntu|$USE|g" "$f"
+          done
+          grep -rhE '^(deb|URIs)' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | head -5
+
       - name: Install dependencies
         timeout-minutes: 25
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          APT_OPTS="-o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::ForceIPv4=true"
 
           ok=""
           for i in 1 2 3 4 5; do
