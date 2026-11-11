@@ -64,9 +64,9 @@ jobs:
             staging_dir/host
             staging_dir/toolchain-*
             build_dir/toolchain-*
-          key: tc-${{ hashFiles('toolchain/**', 'vendor_toolchain/**', 'include/**') }}
+          key: tc-${{ inputs.source_branch }}-${{ hashFiles('toolchain/**', 'vendor_toolchain/**', 'include/**') }}
           restore-keys: |
-            tc-
+            tc-${{ inputs.source_branch }}-
 
       - name: Select working apt mirror
         run: |
