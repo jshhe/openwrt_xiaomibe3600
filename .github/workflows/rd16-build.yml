@@ -49,13 +49,27 @@ jobs:
           ref: ${{ inputs.source_branch }}
           fetch-depth: 1
 
+      - name: Restore download cache
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-v1
+          restore-keys: |
+            dl-
+
+      - name: Restore toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            staging_dir/host
+            staging_dir/toolchain-*
+            build_dir/toolchain-*
+          key: tc-${{ hashFiles('toolchain/**', 'vendor_toolchain/**', 'include/**') }}
+          restore-keys: |
+            tc-
+
       - name: Select working apt mirror
         run: |
-          # Azure-hosted runners resolve apt through /etc/apt/apt-mirrors.txt,
-          # which points at azure.archive.ubuntu.com. When that hostname fails
-          # to resolve, apt retries every package for tens of minutes and the
-          # job dies. Probe a few mirrors and repoint the sources at the first
-          # one that actually answers.
           USE=""
           for m in http://archive.ubuntu.com/ubuntu \
                    http://azure.archive.ubuntu.com/ubuntu \
@@ -149,9 +163,12 @@ jobs:
           OTHER=xiaomi-rd16-qsdk-singbox
           if [ "${{ inputs.profile }}" = "xiaomi-rd16-qsdk-singbox" ]; then OTHER=xiaomi-rd16-qsdk; fi
           sed -i "s|^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_${OTHER}=y|# &|" .config
+          echo "CONFIG_CCACHE=y" >> .config
           make defconfig
           echo "--- enabled devices ---"
           grep -E "^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_.*=y" .config
+          echo "--- mwan3 packages ---"
+          grep -E "^CONFIG_PACKAGE_(mwan3|luci-app-mwan3|ipset|iptables)=" .config || true
 
       - name: Preflight summary
         if: inputs.stage == 'preflight'
@@ -162,10 +179,6 @@ jobs:
             echo "#### vendor_feed packages"
             echo '```'
             ls -1 vendor_feed | head -80
-            echo '```'
-            echo "#### key rd16 packages"
-            echo '```'
-            ls -d vendor_feed/*rd16* vendor_feed/qca-firmware* 2>/dev/null || echo "none matching"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -194,7 +207,7 @@ jobs:
           ls -l "$OUT" || true
           sha256sum "$OUT"/*.ubi "$OUT"/*.bin 2>/dev/null | tee sha256sums.txt || true
 
-      - name: Upload firmware
+      - name: Upload firmware and packages
         if: inputs.stage == 'build' && success()
         uses: actions/upload-artifact@v4
         with:
@@ -202,6 +215,7 @@ jobs:
           path: |
             bin/targets/ipq53xx/ipq53xx_32/*.ubi
             bin/targets/ipq53xx/ipq53xx_32/*.bin
+            bin/targets/ipq53xx/ipq53xx_32/packages/*.ipk
             sha256sums.txt
           if-no-files-found: error
 
