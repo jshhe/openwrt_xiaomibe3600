@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: "preflight = validate vendor_feed + config only; build = full firmware"
+        description: "preflight = vendor_feed + config; prepare = validate qca-wpa-cli patches; build = full firmware"
         type: choice
-        options: ["preflight", "build"]
+        options: ["preflight", "prepare", "build"]
         default: "preflight"
       source_branch:
         description: "Source branch"
@@ -83,7 +83,6 @@ jobs:
           OTHER=xiaomi-rd16-qsdk-singbox
           if [ "${{ inputs.profile }}" = "xiaomi-rd16-qsdk-singbox" ]; then OTHER=xiaomi-rd16-qsdk; fi
           sed -i "s|^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_${OTHER}=y|# &|" .config
-          grep -E "CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_" .config || true
           make defconfig
           echo "--- enabled devices ---"
           grep -E "^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_.*=y" .config
@@ -98,13 +97,19 @@ jobs:
             echo '```'
             ls -1 vendor_feed | head -80
             echo '```'
-            echo "#### sizes"
+            echo "#### key rd16 packages"
             echo '```'
-            du -sh vendor_feed tmp/rootfs vendor_toolchain 2>/dev/null || true
-            echo '```'
-            echo "#### key rd16 packages present?"
             ls -d vendor_feed/*rd16* vendor_feed/qca-firmware* 2>/dev/null || echo "none matching"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate qca-wpa-cli patches
+        if: inputs.stage == 'prepare'
+        run: |
+          set -o pipefail
+          make package/network/utils/qca-wpa-cli/prepare V=s 2>&1 | tee prepare.log
+          echo "--- patched _make_dirs recipe ---"
+          grep -n -A3 '_make_dirs:' build_dir/target-*/hostapd-wpa-cli-*/src/build.rules
 
       - name: Build kernel toolchain (GCC 7.5.0)
         if: inputs.stage == 'build'
@@ -134,10 +139,12 @@ jobs:
             sha256sums.txt
           if-no-files-found: error
 
-      - name: Upload build log on failure
+      - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-log-${{ github.run_number }}
-          path: build.log
+          path: |
+            build.log
+            prepare.log
           if-no-files-found: ignore
