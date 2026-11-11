@@ -1,0 +1,143 @@
+name: RD16 build
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "preflight = validate vendor_feed + config only; build = full firmware"
+        type: choice
+        options: ["preflight", "build"]
+        default: "preflight"
+      source_branch:
+        description: "Source branch"
+        required: true
+        default: "openwrt-24-be3600"
+      profile:
+        description: "Device profile"
+        type: choice
+        options: ["xiaomi-rd16-qsdk", "xiaomi-rd16-qsdk-singbox"]
+        default: "xiaomi-rd16-qsdk"
+      stock_fw_url:
+        description: "Stock RD16 firmware used as vendor_feed source"
+        required: true
+        default: "https://cdn.cnbj1.fds.api.mi-img.com/xiaoqiang/rom/rd16/miwifi_rd16_firmware_87da2_1.0.31.bin"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rd16-${{ github.ref }}-${{ inputs.profile }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android \
+            /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup 2>/dev/null || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_branch }}
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses-dev libssl-dev python3-distutils python3-setuptools \
+            python3-pip rsync unzip zlib1g-dev file wget bc cpio libelf-dev \
+            device-tree-compiler squashfs-tools liblzma-dev patch subversion time
+          python3 -m pip install --user --upgrade pip setuptools wheel
+          python3 -m pip install --user ubi_reader pyelftools
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ~/.local/bin/ubireader_extract_images --help >/dev/null && echo "ubi_reader OK"
+
+      - name: Download stock RD16 firmware
+        run: |
+          curl -fL --retry 3 --retry-delay 5 -o miwifi_rd16_firmware_stock.bin "${{ inputs.stock_fw_url }}"
+          ls -l miwifi_rd16_firmware_stock.bin
+          sha256sum miwifi_rd16_firmware_stock.bin
+
+      - name: Generate vendor_feed from stock firmware
+        run: ./vendor_scripts/prepare_feed.sh rd16 miwifi_rd16_firmware_stock.bin
+
+      - name: Update and patch feeds
+        run: |
+          ./scripts/feeds update -a
+          python3 ./vendor_scripts/patch_feeds.py
+          ./scripts/feeds install -a
+
+      - name: Configure
+        run: |
+          ./vendor_scripts/prepare_config.sh rd16
+          OTHER=xiaomi-rd16-qsdk-singbox
+          if [ "${{ inputs.profile }}" = "xiaomi-rd16-qsdk-singbox" ]; then OTHER=xiaomi-rd16-qsdk; fi
+          sed -i "s|^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_${OTHER}=y|# &|" .config
+          grep -E "CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_" .config || true
+          make defconfig
+          echo "--- enabled devices ---"
+          grep -E "^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_.*=y" .config
+
+      - name: Preflight summary
+        if: inputs.stage == 'preflight'
+        run: |
+          {
+            echo "### Preflight OK"
+            echo ""
+            echo "#### vendor_feed packages"
+            echo '```'
+            ls -1 vendor_feed | head -80
+            echo '```'
+            echo "#### sizes"
+            echo '```'
+            du -sh vendor_feed tmp/rootfs vendor_toolchain 2>/dev/null || true
+            echo '```'
+            echo "#### key rd16 packages present?"
+            ls -d vendor_feed/*rd16* vendor_feed/qca-firmware* 2>/dev/null || echo "none matching"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build kernel toolchain (GCC 7.5.0)
+        if: inputs.stage == 'build'
+        run: ./vendor_scripts/build_kmod_toolchain.sh
+
+      - name: Build firmware
+        if: inputs.stage == 'build'
+        run: |
+          set -o pipefail
+          make -j"$(nproc)" V=s 2>&1 | tee build.log
+
+      - name: Collect images
+        if: inputs.stage == 'build'
+        run: |
+          OUT=bin/targets/ipq53xx/ipq53xx_32
+          ls -l "$OUT" || true
+          sha256sum "$OUT"/*.ubi "$OUT"/*.bin 2>/dev/null | tee sha256sums.txt || true
+
+      - name: Upload firmware
+        if: inputs.stage == 'build' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rd16-${{ inputs.profile }}-${{ github.run_number }}
+          path: |
+            bin/targets/ipq53xx/ipq53xx_32/*.ubi
+            bin/targets/ipq53xx/ipq53xx_32/*.bin
+            sha256sums.txt
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: build.log
+          if-no-files-found: ignore
