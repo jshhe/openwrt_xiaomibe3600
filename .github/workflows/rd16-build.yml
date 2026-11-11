@@ -216,6 +216,7 @@ jobs:
             bin/targets/ipq53xx/ipq53xx_32/*.ubi
             bin/targets/ipq53xx/ipq53xx_32/*.bin
             bin/targets/ipq53xx/ipq53xx_32/packages/*.ipk
+            bin/targets/ipq53xx/ipq53xx_32/packages/*.apk
             sha256sums.txt
           if-no-files-found: error
 
