@@ -21,7 +21,9 @@ DEFAULT_PACKAGES += \
 	iw iwinfo kmod-qca-nss-ecm-wifi-plugin \
 	wifi-scripts \
 	qca-cfg80211tool-vendor qca-cnss-daemon-vendor qca-hostap-vendor \
-	qca-hostapd-cli qca-wpa-cli qca-wpa-supplicant-vendor wififw_mount_script
+	qca-hostapd-cli qca-wpa-cli qca-wpa-supplicant-vendor wififw_mount_script \
+	kmod-ipt-ipset ipset iptables ip6tables iptables-mod-conntrack-extra \
+	mwan3 luci-app-mwan3
 
 define Target/Description
 	Build firmware image for Xiaomi Router BE3600 (RD15/RD16).
