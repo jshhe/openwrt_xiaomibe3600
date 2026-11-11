@@ -50,21 +50,54 @@ jobs:
           fetch-depth: 1
 
       - name: Install dependencies
+        timeout-minutes: 25
         run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
-            gettext git libncurses-dev libssl-dev python3-distutils python3-setuptools \
-            python3-pip rsync unzip zlib1g-dev file wget bc cpio libelf-dev \
-            device-tree-compiler squashfs-tools liblzma-dev patch subversion time
-          python3 -m pip install --user --upgrade pip setuptools wheel
-          python3 -m pip install --user ubi_reader pyelftools
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+
+          ok=""
+          for i in 1 2 3 4 5; do
+            echo "::group::apt-get update (attempt $i)"
+            if sudo apt-get $APT_OPTS update; then ok=yes; fi
+            echo "::endgroup::"
+            if [ -n "$ok" ]; then break; fi
+            echo "update failed, retrying in 20s"
+            sleep 20
+          done
+
+          installed=""
+          for i in 1 2 3 4 5; do
+            echo "::group::apt-get install (attempt $i)"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get $APT_OPTS install -y --no-install-recommends \
+              build-essential clang flex bison g++ gawk \
+              gettext git libncurses-dev libssl-dev python3-distutils python3-setuptools \
+              python3-pip rsync unzip zlib1g-dev file wget bc cpio libelf-dev \
+              device-tree-compiler squashfs-tools liblzma-dev patch subversion time && installed=yes
+            echo "::endgroup::"
+            if [ -n "$installed" ]; then break; fi
+            echo "install failed, retrying in 20s"
+            sudo apt-get $APT_OPTS update || true
+            sleep 20
+          done
+
+          if [ -z "$installed" ]; then
+            echo "apt-get install failed after 5 attempts"
+            exit 1
+          fi
+
+          for i in 1 2 3 4 5; do
+            python3 -m pip install --user --retries 5 --timeout 30 --upgrade pip setuptools wheel && break
+            sleep 15
+          done
+          for i in 1 2 3 4 5; do
+            python3 -m pip install --user --retries 5 --timeout 30 ubi_reader pyelftools && break
+            sleep 15
+          done
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           ~/.local/bin/ubireader_extract_images --help >/dev/null && echo "ubi_reader OK"
 
       - name: Download stock RD16 firmware
         run: |
-          curl -fL --retry 3 --retry-delay 5 -o miwifi_rd16_firmware_stock.bin "${{ inputs.stock_fw_url }}"
+          curl -fL --retry 5 --retry-delay 5 --retry-all-errors -o miwifi_rd16_firmware_stock.bin "${{ inputs.stock_fw_url }}"
           ls -l miwifi_rd16_firmware_stock.bin
           sha256sum miwifi_rd16_firmware_stock.bin
 
@@ -73,7 +106,10 @@ jobs:
 
       - name: Update and patch feeds
         run: |
-          ./scripts/feeds update -a
+          for i in 1 2 3; do
+            ./scripts/feeds update -a && break
+            echo "feeds update failed, retrying"; sleep 20
+          done
           python3 ./vendor_scripts/patch_feeds.py
           ./scripts/feeds install -a
 
