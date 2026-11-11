@@ -150,6 +150,9 @@ jobs:
 
       - name: Update and patch feeds
         run: |
+          if ! grep -q '^src-git educnt ' feeds.conf 2>/dev/null; then
+            echo "src-git educnt https://github.com/jshhe/educnt-openwrt.git" >> feeds.conf
+          fi
           for i in 1 2 3; do
             ./scripts/feeds update -a && break
             echo "feeds update failed, retrying"; sleep 20
@@ -164,6 +167,7 @@ jobs:
           if [ "${{ inputs.profile }}" = "xiaomi-rd16-qsdk-singbox" ]; then OTHER=xiaomi-rd16-qsdk; fi
           sed -i "s|^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_${OTHER}=y|# &|" .config
           echo "CONFIG_CCACHE=y" >> .config
+          echo "CONFIG_PACKAGE_educnt=y" >> .config
           make defconfig
           echo "--- enabled devices ---"
           grep -E "^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_.*=y" .config
