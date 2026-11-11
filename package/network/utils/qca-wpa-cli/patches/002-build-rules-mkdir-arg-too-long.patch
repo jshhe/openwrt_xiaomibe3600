@@ -1,0 +1,25 @@
+From 7b9996d107217393bac5b3edf6577b74991e02b4 Mon Sep 17 00:00:00 2001
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 4 Apr 2024 13:06:29 +0200
+Subject: [PATCH] build: de-duplicate _DIRS before calling mkdir
+
+_DIRS accumulates one entry per object file and every entry repeats the
+full $(BUILDDIR) prefix. With a long build path the resulting command
+line exceeds MAX_ARG_STRLEN (128 KiB) and mkdir fails with:
+
+  /bin/sh: Argument list too long
+  make[4]: *** [../src/build.rules:83: _make_dirs] Error 127
+
+Deduplicate the list before passing it to mkdir, as done upstream.
+
+--- a/src/build.rules
++++ b/src/build.rules
+@@ -80,7 +80,7 @@ endif
+ _DIRS := $(BUILDDIR)/$(PROJ)
+ .PHONY: _make_dirs
+ _make_dirs:
+-	@mkdir -p $(_DIRS)
++	@mkdir -p $(sort $(_DIRS))
+ 
+ $(BUILDDIR)/$(PROJ)/src/%.o: $(ROOTDIR)src/%.c $(CONFIG_FILE) | _make_dirs
+ 	$(Q)$(CC) -c -o $@ $(CFLAGS) $<
