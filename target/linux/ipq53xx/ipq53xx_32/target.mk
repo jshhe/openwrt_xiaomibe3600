@@ -13,11 +13,7 @@ DEFAULT_PACKAGES += \
 	kmod-yt-921x-dsa \
 	kmod-qca-nss-ppe-lag-mgr kmod-qca-nss-ppe-pppoe-mgr qca-ssdk-shell \
 	block-mount ethtool ip-full nand-utils \
-	luci \
-	luci-theme-material luci-theme-openwrt-2020 \
-	luci-theme-argon luci-app-argon-config \
-	luci-theme-design \
-	luci-theme-aurora luci-app-aurora-config \
+	luci luci-theme-bootstrap \
 	iw iwinfo kmod-qca-nss-ecm-wifi-plugin \
 	wifi-scripts \
 	qca-cfg80211tool-vendor qca-cnss-daemon-vendor qca-hostap-vendor \
