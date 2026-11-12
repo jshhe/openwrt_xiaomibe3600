@@ -168,6 +168,10 @@ jobs:
           sed -i "s|^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_${OTHER}=y|# &|" .config
           echo "CONFIG_CCACHE=y" >> .config
           echo "CONFIG_PACKAGE_educnt=y" >> .config
+          echo "CONFIG_PACKAGE_kea-dhcp6=y" >> .config
+          echo "CONFIG_PACKAGE_kea-libs=y" >> .config
+          echo "CONFIG_PACKAGE_log4cplus=y" >> .config
+          echo "CONFIG_PACKAGE_libstdcpp=y" >> .config
           make defconfig
           echo "--- enabled devices ---"
           grep -E "^CONFIG_TARGET_DEVICE_ipq53xx_ipq53xx_32_DEVICE_.*=y" .config
@@ -223,6 +227,20 @@ jobs:
             bin/targets/ipq53xx/ipq53xx_32/packages/*.apk
             sha256sums.txt
           if-no-files-found: error
+
+      - name: Upload Kea packages
+        if: inputs.stage == 'build' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rd16-kea-packages-${{ github.run_number }}
+          path: |
+            bin/packages/arm_cortex-a7_neon-vfpv4/packages/kea-*.apk
+            bin/packages/arm_cortex-a7_neon-vfpv4/packages/log4cplus-*.apk
+            bin/packages/arm_cortex-a7_neon-vfpv4/packages/boost-*.apk
+            bin/packages/arm_cortex-a7_neon-vfpv4/base/libstdcpp6-*.apk
+            bin/packages/arm_cortex-a7_neon-vfpv4/base/libatomic1-*.apk
+            bin/packages/arm_cortex-a7_neon-vfpv4/base/libopenssl3-*.apk
+          if-no-files-found: warn
 
       - name: Upload logs on failure
         if: failure()
